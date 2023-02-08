@@ -1,0 +1,198 @@
+setup:
+  - name: itrust-build dependencies
+    cmd:
+    - export DEBIAN_FRONTEND="noninteractive"
+    - apt-get update -qq
+    - sudo apt-get install -qq debconf-utils -y
+    - echo 'mysql-server mysql-server/root_password password root' | sudo debconf-set-selections
+    - echo 'mysql-server mysql-server/root_password_again password root' | sudo debconf-set-selections
+    - sudo apt-get install -qq openjdk-11-jre-headless -y
+    - sudo apt-get install -qq mysql-server -y
+    - sudo apt-get install -qq maven -y
+  - name: puppeteer dependencies
+    cmd:
+    - sudo apt-get install -qq libgbm-dev -y
+    - sudo apt-get install -qq libxkbcommon-x11-0 -y
+    - sudo apt-get install -qq libgtk-3-0 -y
+jobs:
+  - name: itrust-build
+    steps:
+      - name: iTrust2-v10 git repo
+        original_url: https://github.ncsu.edu/engr-csc326-staff/iTrust2-v10
+      - name: forked repo modified to package war file
+        url: https://github.ncsu.edu/ghou3/iTrust2-v10
+      - name: set up properties file for iTrust2 to talk to database
+        run: cp /home/vagrant/iTrust2-v10/iTrust2/src/main/resources/application.yml.template /home/vagrant/iTrust2-v10/iTrust2/src/main/resources/application.yml
+      - name: Edit config file with DB credentials 
+        run: sed -i '/password:/s/$/ root/' /home/vagrant/iTrust2-v10/iTrust2/src/main/resources/application.yml
+      - name: change directory
+        run: cd /home/vagrant/iTrust2-v10/iTrust2
+      - name: test and build
+        run: sudo mvn --batch-mode --update-snapshots clean test
+      - name: package
+        run: mvn package
+      - name: copy war file to shared directory
+        run: cp /home/vagrant/iTrust2-v10/iTrust2/target/iTrust2-10.war /bakerx/deploy/iTrust2-10.war
+  - name: mutation-coverage
+    steps:
+      - name: mutation test suite git repo
+        url: https://github.com/chrisparnin/checkbox.io-micro-preview
+      - name: running mutations
+        mutation:
+          iterations: 1000
+          snapshots:
+          - http://localhost:3000/survey/long.md
+          - http://localhost:3000/survey/upload.md
+          - http://localhost:3000/survey/survey.md
+          - http://localhost:3000/survey/variations.md
+      - name: remove port occupancy
+        hint: npx kill-port 3000; seems it's no longer needed after delay added
+      - name: kill previous nodemon process
+        run: pkill -9 -f node
+      - name: backup the original markqdown.js
+        run: cp /home/vagrant/checkbox.io-micro-preview/marqdown.js /home/vagrant/checkbox.io-micro-preview/marqdown.js.bak
+      - name: install nodemon
+        run: cd checkbox.io-micro-preview && npm install nodemon && npm i 
+      - name: start nodemon and monitor changes in markqdown.js AT BACKGROUND
+        run: npx nodemon -q index.js markqdown.js &
+      - name: delete previous test harness repo
+        run: rm -rf /home/vagrant/TestHarness
+      - name: copy test harness to vm
+        run: cp -r /bakerx/mutation/TestHarness /home/vagrant/
+      - name: install test harness
+        run: cd /home/vagrant/TestHarness && npm i --unsafe-perm
+      - name: run test harness
+      - hint: cmd is added in build.js -> ParseMutationCoverage()
+  - name: itrust-deploy
+    steps: 
+      - name: create user
+        run: sudo useradd -r -m -U -d /opt/tomcat -s /bin/false tomcat
+      - name: download Tomcat
+        run: wget https://dlcdn.apache.org/tomcat/tomcat-9/v9.0.62/bin/apache-tomcat-9.0.62.tar.gz -P /tmp
+      - name: unzip tar
+        run: sudo tar xf /tmp/apache-tomcat-9*.tar.gz -C /opt/tomcat
+      - name: syslink dir
+        run: sudo ln -sf /opt/tomcat/apache-tomcat-9.0.62 /opt/tomcat/latest
+      - name: grant ownship to tomcat
+        run: sudo chown -RH tomcat /opt/tomcat/latest
+      - name: Install Tomcat
+        run: sudo sh -c 'chmod +x /opt/tomcat/latest/bin/*.sh'
+      - name: copy tomcat.service config
+        run: sudo cp ~/iTrust2/tomcat.service /etc/systemd/system/tomcat.service
+      - name: copy tomcat-users.xml
+        run: sudo cp ~/iTrust2/tomcat-users.xml /opt/tomcat/latest/conf/
+      - name: remove ip constraint
+        run: sed -i '/org.apache.catalina.valves.RemoteAddrValve/d' /opt/tomcat/latest/webapps/host-manager/META-INF/context.xml
+      - name: remove ip constraint
+        run: sed -i '/org.apache.catalina.valves.RemoteAddrValve/d' /opt/tomcat/latest/webapps/manager/META-INF/context.xml
+      - name: remove ip constraint
+        run: sed -i '/allow=/d' /opt/tomcat/latest/webapps/host-manager/META-INF/context.xml
+      - name: remove ip constraint
+        run: sed -i '/allow=/d' /opt/tomcat/latest/webapps/manager/META-INF/context.xml
+      - name: copy war file to Tomcat /webapps
+        run: cp ~/iTrust2/iTrust2-10.war /opt/tomcat/latest/webapps/iTrust2-10.war
+      - name: reload systemctl
+        run: sudo systemctl daemon-reload
+      - name: start tomcat
+        run: sudo systemctl start tomcat
+      - name: status tomcat
+        run: sudo systemctl status tomcat
+      - name: enable tomcat
+        run: sudo systemctl enable tomcat
+  - name: thelounge-build
+    steps: 
+      - name: thelounge git repo
+        url: https://github.com/thelounge/thelounge.git
+      - name: set nodesource
+        run: curl -sL https://deb.nodesource.com/setup_14.x | sudo bash -
+      - name: install nodejs 14.x
+        run: sudo apt-get install -y nodejs
+      - name: install yarn
+        run: npm install --global yarn
+      - name: install
+        run: cd thelounge && yarn install
+      - name: build
+        run: NODE_ENV=production yarn build
+      - name: test
+        run: yarn test
+  - name: thelounge-deploy
+    steps: 
+      - name: delete previous repo
+        run: rm -rf /root/thelounge/
+      - name: set nodesource
+        run: curl -sL https://deb.nodesource.com/setup_14.x | sudo bash -
+      - name: install nodejs 14.x
+        run: sudo apt-get install -y nodejs
+      - name: install yarn
+        run: npm install --global yarn
+      - name: install nginx
+        run: sudo apt-get install -y nginx
+      - name: allow nginx
+        run: sudo ufw allow 'Nginx HTTP'
+      - name: copy default user config
+        run: mkdir -p ~/.thelounge/users/ && cp ~/thelounge-deploy/root.json ~/.thelounge/users/root.json
+      - name: create endpoint
+        run: mkdir -p thelounge/.git
+      - name: git init
+        run: cd thelounge/.git && git init --bare
+      - name: copy post-receive
+        run: cp ~/thelounge-deploy/post-receive ~/thelounge/.git/hooks/post-receive && chmod +x ~/thelounge/.git/hooks/post-receive
+      - name: install dos2unix
+        run: apt-get -y install dos2unix
+      - name: converting file post-receive to Unix format
+        run: dos2unix ~/thelounge/.git/hooks/post-receive
+      - name: run commands in local host
+        hint: 
+        - git clone https://github.com/thelounge/thelounge.git
+        - cd ./thelounge
+        - git remote add blue ssh://root@204.48.24.112/root/thelounge/.git
+        - git remote add green ssh://root@208.68.37.235/root/thelounge/.git
+        - git push blue master
+        - git push green master
+  - name: horahora-deploy
+    steps: 
+      - name: install make
+      - run: sudo apt-get install -y make
+      - name: install docker
+      - run: sudo apt install apt-transport-https ca-certificates curl software-properties-common
+      - run: curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+      - run: sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu bionic stable"
+      - run: sudo apt update
+      - run: apt-cache policy docker-ce
+      - run: sudo apt -y install docker-ce
+      - name: install docker-compose
+      - run: sudo curl -L https://github.com/docker/compose/releases/download/1.29.2/docker-compose-`uname -s`-`uname -m` -o /usr/local/bin/docker-compose
+      - run: sudo chmod +x /usr/local/bin/docker-compose
+      - run: docker-compose --version
+      - name: install docker-compose
+      - run: git clone https://github.com/horahoradev/horahora
+      - run: cd horahora
+      - run: sudo make up
+  - name: medusa-build
+    steps: 
+      - run: sudo apt-get -y install unrar git-core openssl mediainfo
+      - run: sudo apt-get -y install python3
+      - run: sudo addgroup --system medusa
+      - run: sudo adduser --disabled-password --system --home /var/lib/medusa --gecos "Medusa" --ingroup medusa medusa
+      - run: sudo mkdir /opt/medusa && sudo chown medusa:medusa /opt/medusa
+      - run: sudo git clone https://github.com/pymedusa/Medusa.git /opt/medusa
+      - run: sudo chown -R medusa:medusa /opt/medusa
+      - run: sudo cp -v /opt/medusa/runscripts/init.systemd /etc/systemd/system/medusa.service
+      - run: sudo systemctl enable medusa
+      - run: sudo systemctl start medusa
+  - name: medusa-deploy
+    steps: 
+      - name: install nginx
+        run: sudo apt-get install -y nginx
+      - name: allow nginx
+        run: sudo ufw allow 'Nginx HTTP'
+      - run: sudo apt-get -y install unrar git-core openssl mediainfo
+      - run: sudo apt-get -y install python3
+      - run: sudo addgroup --system medusa
+      - run: sudo adduser --disabled-password --system --home /var/lib/medusa --gecos "Medusa" --ingroup medusa medusa
+      - run: sudo mkdir /opt/medusa && sudo chown medusa:medusa /opt/medusa
+      - run: sudo git clone https://github.com/pymedusa/Medusa.git /opt/medusa
+      - run: sudo chown -R medusa:medusa /opt/medusa
+      - run: sudo cp -v /opt/medusa/runscripts/init.systemd /etc/systemd/system/medusa.service
+      - run: sudo systemctl enable medusa
+      - run: sudo systemctl start medusa

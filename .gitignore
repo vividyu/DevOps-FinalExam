@@ -1,0 +1,15 @@
+node_modules/
+.env
+package-lock.json
+iTrust2-v10/
+tmp/
+ctest*
+snapshots/
+snapshots_firstver.zip
+mutation/snapshot_base/
+mutation/202*
+*.previous
+deploy/*.jar
+deploy/*.war
+deploy/tmp*.sh
+deploy/mon/
